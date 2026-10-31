@@ -1,0 +1,102 @@
+name: Build GaviStore IPA
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Check Xcode
+        run: xcodebuild -version
+      - name: Find iOS project
+        id: project
+        shell: bash
+        run: |
+          PROJECT=$(find . -name "*.xcodeproj" -maxdepth 5 | head -n 1)
+          WORKSPACE=$(find . -name "*.xcworkspace" -maxdepth 5 | head -n 1)
+          if [ -n "$WORKSPACE" ]; then
+            echo "type=workspace" >> "$GITHUB_OUTPUT"
+            echo "path=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PROJECT" ]; then
+            echo "type=project" >> "$GITHUB_OUTPUT"
+            echo "path=$PROJECT" >> "$GITHUB_OUTPUT"
+          else
+            echo "Không tìm thấy .xcodeproj hoặc .xcworkspace"
+            echo "Kiểm tra xem repo có chứa source iOS đầy đủ không."
+            exit 1
+          fi
+      - name: Find scheme
+        id: scheme
+        shell: bash
+        run: |
+          TYPE="${{ steps.project.outputs.type }}"
+          PATH_XCODE="${{ steps.project.outputs.path }}"
+          if [ "$TYPE" = "workspace" ]; then
+            LIST=$(xcodebuild -list -workspace "$PATH_XCODE")
+          else
+            LIST=$(xcodebuild -list -project "$PATH_XCODE")
+          fi
+          echo "$LIST"
+          SCHEME=$(echo "$LIST" | sed -n '/Schemes:/,$p' \
+            | tail -n +2 | sed 's/^[[:space:]]*//' \
+            | grep -v '^$' | head -n 1)
+          if [ -z "$SCHEME" ]; then
+            echo "Không tìm thấy scheme Xcode."
+            exit 1
+          fi
+          echo "name=$SCHEME" >> "$GITHUB_OUTPUT"
+      - name: Build iOS app
+        shell: bash
+        run: |
+          TYPE="${{ steps.project.outputs.type }}"
+          PATH_XCODE="${{ steps.project.outputs.path }}"
+          SCHEME="${{ steps.scheme.outputs.name }}"
+          if [ "$TYPE" = "workspace" ]; then
+            xcodebuild \
+              -workspace "$PATH_XCODE" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              PRODUCT_NAME=GaviStore \
+              build
+          else
+            xcodebuild \
+              -project "$PATH_XCODE" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              PRODUCT_NAME=GaviStore \
+              build
+          fi
+      - name: Package app
+        shell: bash
+        run: |
+          APP=$(find build/Build/Products/Release-iphoneos \
+            -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP" ]; then
+            echo "Không tìm thấy file .app sau khi build."
+            exit 1
+          fi
+          mkdir -p output/Payload
+          cp -R "$APP" output/Payload/GaviStore.app
+          cd output
+          zip -r GaviStore.ipa Payload
+      - name: Upload GaviStore IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GaviStore-IPA
+          path: output/GaviStore.ipa
+          if-no-files-found: error
